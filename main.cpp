@@ -148,7 +148,7 @@ public:
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
 			.pNext = &enabledVk11Features,
 			.synchronization2 = VK_TRUE,
-			.dynamicRendering = VK_TRUE,
+			.dynamicRendering = VK_TRUE
 		};
 
 		VkDeviceCreateInfo deviceCreateInfo{
@@ -333,6 +333,17 @@ public:
 
 	}
 
+	void createComputePipeline(VkPipeline& pipeline, VkPipelineShaderStageCreateInfo &shaderStages, VkPipelineLayout& pipelineLayout) {
+	
+		VkComputePipelineCreateInfo pipelineInfo{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = shaderStages,
+			.layout = pipelineLayout
+		};
+
+		vkCreateComputePipelines( deviceIF.logical.device, nullptr, 1, &pipelineInfo, nullptr, &pipeline );
+	}
+
 	void createPipeline(VkPipeline& pipeline, std::vector< VkPipelineShaderStageCreateInfo >& shaderStages, std::vector<VkDescriptorSetLayout>&layout, VkPipelineLayout& pipelineLayout, VkFormat format, VkColorComponentFlags flags, uint32_t pushConstantSize = 0) {
 
 		VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
@@ -444,13 +455,92 @@ public:
 	}
 
 	void setupPipeline() {
-		VkPipelineLayoutCreateInfo velocitySplatPipelineCreateInfo{
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 0,
-			.pSetLayouts = nullptr
+
+		uint32_t descriptorCount = 1;
+		VkDescriptorPoolSize poolSize{
+			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = static_cast<uint32_t>(descriptorCount)
 		};
 
-		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &velocitySplatPipelineCreateInfo, nullptr, &pipelineLayout));
+		VkDescriptorPoolCreateInfo descriptorPoolCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.maxSets = static_cast<uint32_t>(descriptorCount),
+			.poolSizeCount = 1,
+			.pPoolSizes = &poolSize
+		};
+
+		validateResult(vkCreateDescriptorPool(deviceIF.logical.device, &descriptorPoolCreateInfo, nullptr, &descriptorPool));
+
+	
+		VkDescriptorSetLayoutBinding descriptorSetLayoutBinding{
+		.binding = 0,
+		.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		.descriptorCount = 1,
+		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT
+		};
+
+		VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.bindingCount = 1,
+			.pBindings = &descriptorSetLayoutBinding
+		};
+
+		vkCreateDescriptorSetLayout(deviceIF.logical.device, &descriptorSetLayoutCI, nullptr, &testField.SSBO0Layout);
+
+		VkDescriptorSetAllocateInfo descriptorAllocateInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.descriptorPool = descriptorPool,
+			.descriptorSetCount = 1,
+			.pSetLayouts = &testField.SSBO0Layout
+		};
+
+		validateResult(vkAllocateDescriptorSets(deviceIF.logical.device, &descriptorAllocateInfo, &testField.SSBO0DescriptorSet));
+
+		VkDescriptorBufferInfo bufferInfo{
+			.buffer = testField.SSBO0,
+			.offset = 0,
+			.range = VK_WHOLE_SIZE
+		};
+
+		VkWriteDescriptorSet writeDesriptorSet0{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = testField.SSBO0DescriptorSet,
+			.dstBinding = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pBufferInfo = &bufferInfo
+		};
+
+		vkUpdateDescriptorSets(deviceIF.logical.device, 1, &writeDesriptorSet0, 0, nullptr);
+
+		VkPipelineLayoutCreateInfo computePipelineLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &testField.SSBO0Layout
+		};
+
+		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &computePipelineLayoutCI, nullptr, &computePipelineLayout));
+
+		VkPipelineShaderStageCreateInfo computeShaderStage{
+			
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+				.module = shaderModule,
+				.pName = "main"
+			
+		};
+
+		createComputePipeline( computePipeline, computeShaderStage, computePipelineLayout );
+
+		//----
+
+		VkPipelineLayoutCreateInfo graphicsPipelineLayoutCI{
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &testField.SSBO0Layout
+		};
+
+		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &graphicsPipelineLayoutCI, nullptr, &graphicsPipelineLayout));
 
 		std::vector< VkPipelineShaderStageCreateInfo > velocitySplatShaderStages{
 			{
@@ -468,7 +558,8 @@ public:
 		};
 
 		std::vector<VkDescriptorSetLayout> empty;
-		createPipeline(pipeline, velocitySplatShaderStages, empty, pipelineLayout, VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+		empty.push_back(testField.SSBO0Layout);
+		createPipeline(graphicsPipeline, velocitySplatShaderStages, empty, graphicsPipelineLayout, VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
 
 	}
 
@@ -625,10 +716,37 @@ public:
 			};
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+			vkCmdBindPipeline( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline );
+			vkCmdBindDescriptorSets( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &testField.SSBO0DescriptorSet, 0, nullptr  );
+			vkCmdDispatch( commandBuffer, 3, 1, 1 );
+
+			VkBufferMemoryBarrier2 bufferBarrier{
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+
+				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+
+				.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+				.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+
+				.buffer = testField.SSBO0,
+				.offset = 0,
+				.size = VK_WHOLE_SIZE
+			};
+
+			VkDependencyInfo barrierDependencyInfo{
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.bufferMemoryBarrierCount = 1,
+				.pBufferMemoryBarriers = &bufferBarrier
+			};
+
+			vkCmdPipelineBarrier2(commandBuffer, &barrierDependencyInfo);
+
 			transitionImageUndefinedToAttachment( commandBuffer );
 			RenderingAttachment renderingAttachment = setRenderingAttachment(deviceIF.logical.swapchainConfiguration.swapchainImageViews[imageIndex]);
 			vkCmdBeginRendering(commandBuffer, &renderingAttachment.renderingInfo );
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineLayout, 0, 1, &testField.SSBO0DescriptorSet, 0, nullptr);
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 			vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 			vkCmdEndRendering(commandBuffer);
 			transitionImageAttachmentToPresent(commandBuffer);
@@ -665,7 +783,116 @@ public:
 			}
 		}
 	}
+
+	struct Particle {
+		glm::vec4 position{ 0, 0, 0, 1.0 };
+	};
 	
+	void setupBuffers() {
+
+		//Also we need to keep this as main function for setting up all buffers, and move this current content into smaller-function
+
+		//----Later we may not need this, because I believe fields will be zero-initialized---
+		Particle p0{
+			.position = glm::vec4(-0.75, -0.75, 0, 1.0)
+		};
+
+		Particle p1{
+			.position = glm::vec4(0.5, 0.75, 0, 1.0)
+		};
+
+		Particle p2{
+			.position = glm::vec4(-0.75, 0.75, 0, 1.0)
+		};
+
+		testField.SSBO0Data.push_back(p0);
+		testField.SSBO0Data.push_back(p1);
+		testField.SSBO0Data.push_back(p2);
+
+		//----
+
+		VkBufferCreateInfo bufferCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = testField.SSBO0Data.size() * sizeof( Particle ),
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		};
+
+		VmaAllocationCreateInfo allocationCreateInfo{
+			.flags = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+			.usage = VMA_MEMORY_USAGE_AUTO
+		};
+
+		validateResult(vmaCreateBuffer(vmaAllocator, &bufferCreateInfo, &allocationCreateInfo, &testField.SSBO0, &testField.SSB0Allocation, &testField.SSBO0AllocationInfo));
+
+		VkBuffer stagingBuffer{};
+		VmaAllocation stagingBufferAllocation{};
+		VkBufferCreateInfo stagingBufferCI{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = testField.SSBO0Data.size() * sizeof(Particle),
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+		};
+
+		VmaAllocationCreateInfo stagingBufferAllocationCI{
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO
+		};
+
+		validateResult(vmaCreateBuffer( vmaAllocator, &stagingBufferCI, &stagingBufferAllocationCI, &stagingBuffer, &stagingBufferAllocation, nullptr), "Failed to Create VMA Buffer");
+
+		void* imageSourceBufferPtr{ nullptr };
+		vmaMapMemory( vmaAllocator, stagingBufferAllocation, &imageSourceBufferPtr);
+		memcpy(imageSourceBufferPtr, testField.SSBO0Data.data() , testField.SSBO0Data.size() * sizeof(Particle));
+		vmaFlushAllocation(vmaAllocator, stagingBufferAllocation, 0, VK_WHOLE_SIZE);
+		vmaUnmapMemory(vmaAllocator, stagingBufferAllocation);
+
+		VkFenceCreateInfo fenceOneTimeCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+		};
+		VkFence fenceOneTime{};
+
+		validateResult(vkCreateFence( deviceIF.logical.device, &fenceOneTimeCreateInfo, nullptr, &fenceOneTime), "Failed to Create one time Fence");
+
+		VkCommandBuffer commandBufferOneTime{};
+		VkCommandBufferAllocateInfo commandBufferOneTimeAllocationInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = deviceIF.logical.commandPool,
+			.commandBufferCount = 1
+		};
+
+		validateResult(vkAllocateCommandBuffers( deviceIF.logical.device, &commandBufferOneTimeAllocationInfo, &commandBufferOneTime), "Failed to Allocate one time command buffer");
+
+		VkCommandBufferBeginInfo commandBufferOneTimeBeginInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+		};
+
+		validateResult(vkBeginCommandBuffer(commandBufferOneTime, &commandBufferOneTimeBeginInfo), "Failed To Begin Command Buffer");
+	
+		VkBufferCopy copyRegion{};
+		copyRegion.srcOffset = 0;
+		copyRegion.dstOffset = 0;
+		copyRegion.size = testField.SSBO0Data.size() * sizeof(Particle);
+
+		vkCmdCopyBuffer(
+			commandBufferOneTime,
+			stagingBuffer,
+			testField.SSBO0,
+			1,
+			&copyRegion
+		);
+
+		validateResult(vkEndCommandBuffer(commandBufferOneTime), "Failed to end Command buffer");
+
+		VkSubmitInfo oneTimeSubmitInfo{
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &commandBufferOneTime
+		};
+
+		validateResult(vkQueueSubmit( deviceIF.queue.queue, 1, &oneTimeSubmitInfo, fenceOneTime), "Failed to submit to queue");
+		validateResult(vkWaitForFences( deviceIF.logical.device, 1, &fenceOneTime, VK_TRUE, UINT64_MAX), "Failed to Wait for Fences");
+	}
+
 	void setup() {
 		setupLibraries();
 		setupInstance();
@@ -677,6 +904,7 @@ public:
 		setupSync2();
 		setupCommandBuffers();
 		loadAndCompileShaders();
+		setupBuffers();
 		setupPipeline();
 		animate();
 	}
@@ -753,6 +981,22 @@ private:
 		} logical;
 	} deviceIF;
 
+	struct Field {
+		VkBuffer SSBO0;
+		
+		VmaAllocation SSB0Allocation;
+		VmaAllocationInfo SSBO0AllocationInfo;
+
+		VkDescriptorSet SSBO0DescriptorSet;
+		VkDescriptorSetLayout SSBO0Layout{};
+
+		//I think we can remove this later...as everything will be zero initialized anyways, as long as we have Particle{0}
+		std::vector< Particle > SSBO0Data;
+	} testField;
+
+	VkDescriptorPool descriptorPool{};
+	std::array< VkDescriptorSetLayout, 2> descriptorLayouts;
+
 	VmaAllocator vmaAllocator;
 
 	Slang::ComPtr< slang::IGlobalSession > slangGlobalSession;
@@ -761,8 +1005,11 @@ private:
 	int frameIndex = 0;
 	uint32_t imageIndex = 0;
 
-		VkPipelineLayout pipelineLayout;
-		VkPipeline pipeline;
+	VkPipelineLayout graphicsPipelineLayout;
+	VkPipeline graphicsPipeline;
+
+	VkPipelineLayout computePipelineLayout;
+	VkPipeline computePipeline;
 };
 
 int main() {
