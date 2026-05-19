@@ -23,6 +23,9 @@
 class Renderer {
 public:
 
+	struct Field;
+	struct Constraints;
+
 	void validateResult(VkResult result, std::string message = "ERROR!") {
 		if (result != VK_SUCCESS) {
 			std::cerr << "ERROR: " << message << std::endl;
@@ -665,6 +668,211 @@ public:
 			}
 		}
 	}
+
+	void setupDescriptorSet() {
+		
+		VkDescriptorPoolSize poolSize{
+			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = static_cast<uint32_t>(cloth.descriptorCount)
+		};
+
+		VkDescriptorPoolCreateInfo descriptorPoolCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.maxSets = 1,
+			.poolSizeCount = 1,
+			.pPoolSizes = &poolSize
+		};
+
+		validateResult(vkCreateDescriptorPool(deviceIF.logical.device, &descriptorPoolCreateInfo, nullptr, &descriptorPool));
+
+		std::vector< VkDescriptorSetLayoutBinding > bindings;
+		for (uint32_t index = 0; index < cloth.descriptorCount; index++) {
+			VkDescriptorSetLayoutBinding descriptorSetLayoutBinding{
+				.binding = index,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT
+			};
+
+			bindings.push_back(descriptorSetLayoutBinding);
+		}
+
+		VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.bindingCount = static_cast< uint32_t >( bindings.size() ),
+			.pBindings = bindings.data()
+		};
+
+		vkCreateDescriptorSetLayout(deviceIF.logical.device, &descriptorSetLayoutCI, nullptr, &cloth.descriptorSetLayout );
+
+		VkDescriptorSetAllocateInfo descriptorAllocateInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.descriptorPool = descriptorPool,
+			.descriptorSetCount = 1,
+			.pSetLayouts = &cloth.descriptorSetLayout
+		};
+
+		validateResult(vkAllocateDescriptorSets(deviceIF.logical.device, &descriptorAllocateInfo, &cloth.descriptorSet ));
+	}
+
+	void setupBuffer( const void* data, size_t byteSize, Field& field ) {
+		VkBufferCreateInfo bufferCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = byteSize,
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		};
+
+		VmaAllocationCreateInfo allocationCreateInfo{
+			.flags = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+			.usage = VMA_MEMORY_USAGE_AUTO
+		};
+
+		validateResult(vmaCreateBuffer(vmaAllocator, &bufferCreateInfo, &allocationCreateInfo, &field.buffer, &field.allocation, &field.allocationInfo));
+
+		VkBuffer stagingBuffer{};
+		VmaAllocation stagingBufferAllocation{};
+		VkBufferCreateInfo stagingBufferCI{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = byteSize,
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+		};
+
+		VmaAllocationCreateInfo stagingBufferAllocationCI{
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO
+		};
+
+		validateResult(vmaCreateBuffer(vmaAllocator, &stagingBufferCI, &stagingBufferAllocationCI, &stagingBuffer, &stagingBufferAllocation, nullptr), "Failed to Create VMA Buffer");
+
+		VkFenceCreateInfo fenceOneTimeCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+		};
+		VkFence fenceOneTime{};
+
+		validateResult(vkCreateFence(deviceIF.logical.device, &fenceOneTimeCreateInfo, nullptr, &fenceOneTime), "Failed to Create one time Fence");
+
+		VkCommandBuffer commandBufferOneTime{};
+		VkCommandBufferAllocateInfo commandBufferOneTimeAllocationInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = deviceIF.logical.commandPool,
+			.commandBufferCount = 1
+		};
+
+		validateResult(vkAllocateCommandBuffers(deviceIF.logical.device, &commandBufferOneTimeAllocationInfo, &commandBufferOneTime), "Failed to Allocate one time command buffer");
+
+		VkCommandBufferBeginInfo commandBufferOneTimeBeginInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+		};
+
+		if (data != nullptr) {
+			void* imageSourceBufferPtr{ nullptr };
+			vmaMapMemory(vmaAllocator, stagingBufferAllocation, &imageSourceBufferPtr);
+			memcpy(imageSourceBufferPtr, data, byteSize);
+			vmaFlushAllocation(vmaAllocator, stagingBufferAllocation, 0, VK_WHOLE_SIZE);
+			vmaUnmapMemory(vmaAllocator, stagingBufferAllocation);
+		}
+
+		validateResult(vkBeginCommandBuffer(commandBufferOneTime, &commandBufferOneTimeBeginInfo), "Failed To Begin Command Buffer");
+
+		if (data != nullptr) {
+			VkBufferCopy copyRegion{};
+			copyRegion.srcOffset = 0;
+			copyRegion.dstOffset = 0;
+			copyRegion.size = byteSize;
+
+			vkCmdCopyBuffer(
+				commandBufferOneTime,
+				stagingBuffer,
+				field.buffer,
+				1,
+				&copyRegion
+			);
+		}
+		else {
+			vkCmdFillBuffer(commandBufferOneTime, field.buffer, 0, byteSize, 0);
+		}
+
+		VkBufferMemoryBarrier2 barrier{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+			.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			.buffer = field.buffer,
+			.offset = 0,
+			.size = VK_WHOLE_SIZE
+		};
+
+		VkDependencyInfo dependencyInfo{
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.bufferMemoryBarrierCount = 1,
+			.pBufferMemoryBarriers = &barrier
+		};
+
+		vkCmdPipelineBarrier2( commandBufferOneTime,  &dependencyInfo );
+
+		validateResult(vkEndCommandBuffer(commandBufferOneTime), "Failed to end Command buffer");
+
+		VkSubmitInfo oneTimeSubmitInfo{
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &commandBufferOneTime
+		};
+
+		validateResult(vkQueueSubmit(deviceIF.queue.queue, 1, &oneTimeSubmitInfo, fenceOneTime), "Failed to submit to queue");
+		validateResult(vkWaitForFences(deviceIF.logical.device, 1, &fenceOneTime, VK_TRUE, UINT64_MAX), "Failed to Wait for Fences");
+	
+		vmaDestroyBuffer(vmaAllocator, stagingBuffer, stagingBufferAllocation);
+		vkDestroyFence( deviceIF.logical.device, fenceOneTime, nullptr );
+		vkFreeCommandBuffers( deviceIF.logical.device, deviceIF.logical.commandPool, 1, &commandBufferOneTime );
+	}
+
+	void updateDescriptors() {
+		Field* fields[] = {
+			&cloth.position,
+			&cloth.predictedPosition,
+			&cloth.velocity,
+			&cloth.mass,
+			&cloth.lambda,
+			&cloth.constraints
+		};
+
+		std::vector< VkWriteDescriptorSet > writes;
+		for (uint32_t index = 0; index < cloth.descriptorCount; index++) {
+			VkDescriptorBufferInfo bufferInfo{
+				.buffer = fields[index]->buffer,
+				.offset = 0,
+				.range = VK_WHOLE_SIZE
+			};
+
+			VkWriteDescriptorSet writeDescriptor{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = cloth.descriptorSet,
+				.dstBinding = index,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &bufferInfo
+			};
+
+			writes.push_back(writeDescriptor);
+		}
+
+		vkUpdateDescriptorSets(deviceIF.logical.device, writes.size(), writes.data(), 0, nullptr);
+	}
+
+	void setupCloth() {
+		setupDescriptorSet();
+
+		setupBuffer( cloth.positionData.data(), cloth.positionData.size() * sizeof(glm::vec3), cloth.position );
+		setupBuffer( nullptr, cloth.positionData.size() * sizeof(glm::vec3), cloth.predictedPosition );
+		setupBuffer(nullptr, cloth.positionData.size() * sizeof(glm::vec3), cloth.velocity );
+		setupBuffer(nullptr, cloth.positionData.size() * sizeof(float), cloth.mass );
+		setupBuffer(nullptr, cloth.positionData.size() * sizeof(float), cloth.lambda );
+		setupBuffer(nullptr, cloth.positionData.size() * sizeof( Constraints ), cloth.constraints );
+
+		updateDescriptors();
+	}
 	
 	void setup() {
 		setupLibraries();
@@ -677,6 +885,7 @@ public:
 		setupSync2();
 		setupCommandBuffers();
 		loadAndCompileShaders();
+		setupCloth();
 		setupPipeline();
 		animate();
 	}
@@ -761,8 +970,41 @@ private:
 	int frameIndex = 0;
 	uint32_t imageIndex = 0;
 
-		VkPipelineLayout pipelineLayout;
-		VkPipeline pipeline;
+	VkPipelineLayout pipelineLayout;
+	VkPipeline pipeline;
+
+	VkDescriptorPool descriptorPool;
+
+	struct Field {
+		VkBuffer buffer;
+		VmaAllocation allocation;
+		VmaAllocationInfo allocationInfo;
+	};
+
+	//temporary filler
+	struct Constraints {
+		int a;
+		int b;
+	};
+
+	struct Cloth {
+		Field position;
+		Field predictedPosition;
+		Field velocity;
+		Field mass;
+		Field lambda;
+
+		Field constraints;
+		Field indices;
+
+		int descriptorCount = 6;
+		VkDescriptorSet descriptorSet;
+		VkDescriptorSetLayout descriptorSetLayout;
+
+		//cpu side data initialization
+		std::vector< glm::vec3 > positionData{ 1, glm::vec3() };
+		std::vector< uint32_t > indexData;
+	} cloth;
 };
 
 int main() {
