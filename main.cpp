@@ -154,13 +154,18 @@ public:
 			.dynamicRendering = VK_TRUE,
 		};
 
+		VkPhysicalDeviceFeatures deviceFeatures{
+			.fillModeNonSolid = VK_TRUE
+		};
+
 		VkDeviceCreateInfo deviceCreateInfo{
 			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 			.pNext = &enabledVk13Features,
 			.queueCreateInfoCount = 1,
 			.pQueueCreateInfos = &queueCreateInfo,
 			.enabledExtensionCount = static_cast<uint32_t>(extensionsIF.device.extensions.size()),
-			.ppEnabledExtensionNames = extensionsIF.device.extensions.data()
+			.ppEnabledExtensionNames = extensionsIF.device.extensions.data(),
+			.pEnabledFeatures = &deviceFeatures
 		};
 
 		validateResult(vkCreateDevice(deviceIF.physical.device, &deviceCreateInfo, nullptr, &deviceIF.logical.device));
@@ -417,7 +422,8 @@ public:
 
 		VkPipelineRasterizationStateCreateInfo rasterizationState{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-			.cullMode = VK_CULL_MODE_BACK_BIT,
+			.polygonMode = VK_POLYGON_MODE_LINE,
+			.cullMode = VK_CULL_MODE_NONE,
 			.frontFace = VK_FRONT_FACE_CLOCKWISE,
 			.lineWidth = 1.0f
 		};
@@ -446,33 +452,44 @@ public:
 		validateResult(vkCreateGraphicsPipelines(deviceIF.logical.device, nullptr, 1, &pipelineCreateInfo, nullptr, &pipeline));
 	}
 
-	void setupPipeline() {
-		VkPipelineLayoutCreateInfo velocitySplatPipelineCreateInfo{
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 0,
-			.pSetLayouts = nullptr
+	void createComputePipeline(VkPipeline& pipeline, VkPipelineShaderStageCreateInfo& shaderStages, VkPipelineLayout& pipelineLayout) {
+		VkComputePipelineCreateInfo pipelineInfo{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = shaderStages,
+			.layout = pipelineLayout
 		};
 
-		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &velocitySplatPipelineCreateInfo, nullptr, &pipelineLayout));
+		vkCreateComputePipelines(deviceIF.logical.device, nullptr, 1, &pipelineInfo, nullptr, &pipeline);
+	}
 
-		std::vector< VkPipelineShaderStageCreateInfo > velocitySplatShaderStages{
+	void setupPipeline() {
+		std::vector<VkDescriptorSetLayout> graphicsDescriptorSetLayouts;
+		graphicsDescriptorSetLayouts.push_back( cloth.descriptorSetLayout );
+
+		VkPipelineLayoutCreateInfo graphicsPipelineLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = static_cast< uint32_t >( graphicsDescriptorSetLayouts.size()),
+			.pSetLayouts = graphicsDescriptorSetLayouts.data()
+		};
+
+		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &graphicsPipelineLayoutCI, nullptr, &graphicsPipeline.pipelineLayout ));
+
+		std::vector< VkPipelineShaderStageCreateInfo > graphicsPipelineShaderStages{
 			{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.stage = VK_SHADER_STAGE_VERTEX_BIT,
 				.module = shaderModule,
-				.pName = "main"
+				.pName = "vertexShader"
 			},
 			{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
 				.module = shaderModule,
-				.pName = "main"
+				.pName = "fragmentShader"
 			}
 		};
-
-		std::vector<VkDescriptorSetLayout> empty;
-		createPipeline(pipeline, velocitySplatShaderStages, empty, pipelineLayout, VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
-
+		
+		createPipeline( graphicsPipeline.pipeline, graphicsPipelineShaderStages, graphicsDescriptorSetLayouts, graphicsPipeline.pipelineLayout, VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
 	}
 
 	void recreateSwapchain() {
@@ -631,8 +648,10 @@ public:
 			transitionImageUndefinedToAttachment( commandBuffer );
 			RenderingAttachment renderingAttachment = setRenderingAttachment(deviceIF.logical.swapchainConfiguration.swapchainImageViews[imageIndex]);
 			vkCmdBeginRendering(commandBuffer, &renderingAttachment.renderingInfo );
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-			vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline.pipeline );
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+			vkCmdBindIndexBuffer(commandBuffer, cloth.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
+			vkCmdDrawIndexed( commandBuffer, cloth.indexData.size(), 1, 0, 0, 0 );
 			vkCmdEndRendering(commandBuffer);
 			transitionImageAttachmentToPresent(commandBuffer);
 
@@ -715,11 +734,11 @@ public:
 		validateResult(vkAllocateDescriptorSets(deviceIF.logical.device, &descriptorAllocateInfo, &cloth.descriptorSet ));
 	}
 
-	void setupBuffer( const void* data, size_t byteSize, Field& field ) {
+	void setupBuffer( const void* data, size_t byteSize, Field& field, VkBufferUsageFlags flags ) {
 		VkBufferCreateInfo bufferCreateInfo{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = byteSize,
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			.usage = flags | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 		};
 
 		VmaAllocationCreateInfo allocationCreateInfo{
@@ -765,40 +784,35 @@ public:
 			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
 		};
 
-		if (data != nullptr) {
-			void* imageSourceBufferPtr{ nullptr };
-			vmaMapMemory(vmaAllocator, stagingBufferAllocation, &imageSourceBufferPtr);
-			memcpy(imageSourceBufferPtr, data, byteSize);
-			vmaFlushAllocation(vmaAllocator, stagingBufferAllocation, 0, VK_WHOLE_SIZE);
-			vmaUnmapMemory(vmaAllocator, stagingBufferAllocation);
-		}
+		
+		void* imageSourceBufferPtr{ nullptr };
+		vmaMapMemory(vmaAllocator, stagingBufferAllocation, &imageSourceBufferPtr);
+		memcpy(imageSourceBufferPtr, data, byteSize);
+		vmaFlushAllocation(vmaAllocator, stagingBufferAllocation, 0, VK_WHOLE_SIZE);
+		vmaUnmapMemory(vmaAllocator, stagingBufferAllocation);
+		
 
 		validateResult(vkBeginCommandBuffer(commandBufferOneTime, &commandBufferOneTimeBeginInfo), "Failed To Begin Command Buffer");
 
-		if (data != nullptr) {
-			VkBufferCopy copyRegion{};
-			copyRegion.srcOffset = 0;
-			copyRegion.dstOffset = 0;
-			copyRegion.size = byteSize;
+		VkBufferCopy copyRegion{};
+		copyRegion.srcOffset = 0;
+		copyRegion.dstOffset = 0;
+		copyRegion.size = byteSize;
 
-			vkCmdCopyBuffer(
-				commandBufferOneTime,
-				stagingBuffer,
-				field.buffer,
-				1,
-				&copyRegion
-			);
-		}
-		else {
-			vkCmdFillBuffer(commandBufferOneTime, field.buffer, 0, byteSize, 0);
-		}
+		vkCmdCopyBuffer(
+			commandBufferOneTime,
+			stagingBuffer,
+			field.buffer,
+			1,
+			&copyRegion
+		);
 
 		VkBufferMemoryBarrier2 barrier{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
 			.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 			.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
 			.buffer = field.buffer,
 			.offset = 0,
 			.size = VK_WHOLE_SIZE
@@ -834,35 +848,34 @@ public:
 			&cloth.predictedPosition,
 			&cloth.velocity,
 			&cloth.mass,
-			&cloth.lambda,
+			& cloth.lambda,
 			&cloth.constraints
 		};
 
-		std::vector< VkWriteDescriptorSet > writes;
+		std::vector< VkDescriptorBufferInfo > writesInfo( cloth.descriptorCount );
+		std::vector< VkWriteDescriptorSet > writes( cloth.descriptorCount );
 		for (uint32_t index = 0; index < cloth.descriptorCount; index++) {
-			VkDescriptorBufferInfo bufferInfo{
+			writesInfo[index] = {
 				.buffer = fields[index]->buffer,
 				.offset = 0,
 				.range = VK_WHOLE_SIZE
 			};
 
-			VkWriteDescriptorSet writeDescriptor{
+			writes[index] = {
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 				.dstSet = cloth.descriptorSet,
 				.dstBinding = index,
 				.descriptorCount = 1,
 				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.pBufferInfo = &bufferInfo
+				.pBufferInfo = &writesInfo[index]
 			};
-
-			writes.push_back(writeDescriptor);
 		}
 
 		vkUpdateDescriptorSets(deviceIF.logical.device, writes.size(), writes.data(), 0, nullptr);
 	}
 
 	void populateCloth() {
-		int subDivision = 2;
+		int subDivision = 20;
 		float length = 1.0;
 		float width = 0.5;
 
@@ -871,11 +884,19 @@ public:
 
 		for( uint32_t i = 0; i <= subDivision; i++ ){
 			for (uint32_t j = 0; j <= subDivision; j++) {
-				cloth.positionData.push_back({
-					segmentWidth * j - width * 0.5,
-					segmentLength * i - length * 0.5,
-					0.0
+				cloth.positionData.push_back(glm::vec4{
+					segmentWidth * i - width * 0.5,
+					segmentLength * j - length * 0.5,
+					0.0,
+					1.0
 				});
+
+				if (i == 0) {
+					cloth.massData.push_back(0.0f);
+				}
+				else {
+					cloth.massData.push_back(1.0f);
+				}
 			}
 		}
 
@@ -897,14 +918,6 @@ public:
 				cloth.indexData.push_back(topRight);
 				cloth.indexData.push_back(bottomRight);
 				cloth.indexData.push_back(bottomLeft);
-
-
-				if (i == 0) {
-					cloth.massData.push_back(0.0f);
-				}
-				else {
-					cloth.massData.push_back(1.0f);
-				}
 
 				cloth.constraintsData.push_back({
 					topLeft, topRight, segmentWidth
@@ -928,18 +941,21 @@ public:
 			}
 		}
 
+		cloth.velocityData.resize(cloth.positionData.size(), glm::vec4(0, 0, 0, 0));
+		cloth.lambdaData.resize(cloth.positionData.size(), 0.0);
 	}
 
 	void setupCloth() {
 		setupDescriptorSet();
 		populateCloth();
 
-		setupBuffer( cloth.positionData.data(), cloth.positionData.size() * sizeof(glm::vec3), cloth.position );
-		setupBuffer( cloth.positionData.data(), cloth.positionData.size() * sizeof(glm::vec3), cloth.predictedPosition );
-		setupBuffer( cloth.massData.data(), cloth.massData.size() * sizeof(float), cloth.mass);
-		setupBuffer( nullptr, cloth.positionData.size() * sizeof(glm::vec3), cloth.velocity );
-		setupBuffer( nullptr, cloth.positionData.size() * sizeof(float), cloth.lambda );
-		setupBuffer( cloth.constraintsData.data(), cloth.constraintsData.size() * sizeof(Constraints), cloth.constraints);
+		setupBuffer( cloth.positionData.data(), cloth.positionData.size() * sizeof(glm::vec4), cloth.position, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer( cloth.positionData.data(), cloth.positionData.size() * sizeof(glm::vec4), cloth.predictedPosition, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer( cloth.massData.data(), cloth.massData.size() * sizeof(float), cloth.mass, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer( cloth.velocityData.data(), cloth.velocityData.size() * sizeof(glm::vec4), cloth.velocity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer( cloth.lambdaData.data(), cloth.lambdaData.size() * sizeof(float), cloth.lambda, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer( cloth.constraintsData.data(), cloth.constraintsData.size() * sizeof(Constraints), cloth.constraints, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer(cloth.indexData.data(), cloth.indexData.size() * sizeof( uint32_t ), cloth.indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT );
 
 		updateDescriptors();
 	}
@@ -1040,8 +1056,10 @@ private:
 	int frameIndex = 0;
 	uint32_t imageIndex = 0;
 
-	VkPipelineLayout pipelineLayout;
-	VkPipeline pipeline;
+	struct Pipeline {
+		VkPipelineLayout pipelineLayout;
+		VkPipeline pipeline;
+	} graphicsPipeline, predictionPipeline;
 
 	VkDescriptorPool descriptorPool;
 
@@ -1051,12 +1069,12 @@ private:
 		VmaAllocationInfo allocationInfo;
 	};
 
-	//temporary filler
 	struct Constraints {
 		uint32_t a;
 		uint32_t b;
 
 		float restLength;
+		float padding;
 	};
 
 	struct Cloth {
@@ -1069,15 +1087,17 @@ private:
 		Field constraints;
 		Field indices;
 
-		int descriptorCount = 6;
+		int descriptorCount = 3;
 		VkDescriptorSet descriptorSet;
 		VkDescriptorSetLayout descriptorSetLayout;
 
 		//cpu side data initialization
-		std::vector< glm::vec3 > positionData;
+		std::vector< glm::vec4 > positionData;
 		std::vector< uint32_t > indexData;
 		std::vector< float > massData;
 		std::vector< Constraints > constraintsData;
+		std::vector< glm::vec4 > velocityData;
+		std::vector< float > lambdaData;
 	} cloth;
 };
 
