@@ -861,15 +861,85 @@ public:
 		vkUpdateDescriptorSets(deviceIF.logical.device, writes.size(), writes.data(), 0, nullptr);
 	}
 
+	void populateCloth() {
+		int subDivision = 2;
+		float length = 1.0;
+		float width = 0.5;
+
+		float segmentLength = length / subDivision;
+		float segmentWidth = width / subDivision;
+
+		for( uint32_t i = 0; i <= subDivision; i++ ){
+			for (uint32_t j = 0; j <= subDivision; j++) {
+				cloth.positionData.push_back({
+					segmentWidth * j - width * 0.5,
+					segmentLength * i - length * 0.5,
+					0.0
+				});
+			}
+		}
+
+		for (uint32_t i = 0; i < subDivision; i++) {
+			for (uint32_t j = 0; j < subDivision; j++) {
+
+				uint32_t rowStart = i * (subDivision + 1);
+				uint32_t nextRowStart = (i + 1) * (subDivision + 1);
+
+				uint32_t topLeft = rowStart + j;
+				uint32_t topRight = topLeft + 1;
+				uint32_t bottomLeft = nextRowStart + j;
+				uint32_t bottomRight = bottomLeft + 1;
+
+				cloth.indexData.push_back(topLeft);
+				cloth.indexData.push_back(topRight);
+				cloth.indexData.push_back(bottomLeft);
+
+				cloth.indexData.push_back(topRight);
+				cloth.indexData.push_back(bottomRight);
+				cloth.indexData.push_back(bottomLeft);
+
+
+				if (i == 0) {
+					cloth.massData.push_back(0.0f);
+				}
+				else {
+					cloth.massData.push_back(1.0f);
+				}
+
+				cloth.constraintsData.push_back({
+					topLeft, topRight, segmentWidth
+				});
+
+				cloth.constraintsData.push_back({
+					topLeft, bottomLeft, segmentLength
+				});
+
+				if (j == subDivision - 1) {
+					cloth.constraintsData.push_back({
+						topRight, bottomRight, segmentLength
+					});
+				}
+
+				if (i == subDivision - 1) {
+					cloth.constraintsData.push_back({
+						bottomLeft, bottomRight, segmentWidth
+					});
+				}
+			}
+		}
+
+	}
+
 	void setupCloth() {
 		setupDescriptorSet();
+		populateCloth();
 
 		setupBuffer( cloth.positionData.data(), cloth.positionData.size() * sizeof(glm::vec3), cloth.position );
-		setupBuffer( nullptr, cloth.positionData.size() * sizeof(glm::vec3), cloth.predictedPosition );
-		setupBuffer(nullptr, cloth.positionData.size() * sizeof(glm::vec3), cloth.velocity );
-		setupBuffer(nullptr, cloth.positionData.size() * sizeof(float), cloth.mass );
-		setupBuffer(nullptr, cloth.positionData.size() * sizeof(float), cloth.lambda );
-		setupBuffer(nullptr, cloth.positionData.size() * sizeof( Constraints ), cloth.constraints );
+		setupBuffer( cloth.positionData.data(), cloth.positionData.size() * sizeof(glm::vec3), cloth.predictedPosition );
+		setupBuffer( cloth.massData.data(), cloth.massData.size() * sizeof(float), cloth.mass);
+		setupBuffer( nullptr, cloth.positionData.size() * sizeof(glm::vec3), cloth.velocity );
+		setupBuffer( nullptr, cloth.positionData.size() * sizeof(float), cloth.lambda );
+		setupBuffer( cloth.constraintsData.data(), cloth.constraintsData.size() * sizeof(Constraints), cloth.constraints);
 
 		updateDescriptors();
 	}
@@ -983,8 +1053,10 @@ private:
 
 	//temporary filler
 	struct Constraints {
-		int a;
-		int b;
+		uint32_t a;
+		uint32_t b;
+
+		float restLength;
 	};
 
 	struct Cloth {
@@ -1002,8 +1074,10 @@ private:
 		VkDescriptorSetLayout descriptorSetLayout;
 
 		//cpu side data initialization
-		std::vector< glm::vec3 > positionData{ 1, glm::vec3() };
+		std::vector< glm::vec3 > positionData;
 		std::vector< uint32_t > indexData;
+		std::vector< float > massData;
+		std::vector< Constraints > constraintsData;
 	} cloth;
 };
 
