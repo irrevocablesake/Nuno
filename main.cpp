@@ -463,6 +463,28 @@ public:
 	}
 
 	void setupPipeline() {
+		//COMPUTE PIPELINE
+		VkPipelineLayoutCreateInfo predictionPipelineLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &cloth.descriptorSetLayout
+		};
+
+		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &predictionPipelineLayoutCI, nullptr, &predictionPipeline.pipelineLayout));
+
+		VkPipelineShaderStageCreateInfo computeShaderStage{
+
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = shaderModule,
+			.pName = "predictionShader"
+
+		};
+
+		createComputePipeline( predictionPipeline.pipeline, computeShaderStage, predictionPipeline.pipelineLayout );
+
+
+		//GRAPHICS PIPELINE
 		std::vector<VkDescriptorSetLayout> graphicsDescriptorSetLayouts;
 		graphicsDescriptorSetLayouts.push_back( cloth.descriptorSetLayout );
 
@@ -599,6 +621,29 @@ public:
 		vkCmdPipelineBarrier2(commandBuffer, &barrierPresentDependencyInfo);
 	}
 
+	void waitForComputeWrite(VkCommandBuffer& commandBuffer, VkBuffer &buffer ) {
+		VkBufferMemoryBarrier2 bufferBarrier{
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+
+				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+
+				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+				.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT,
+
+				.buffer = buffer,
+				.offset = 0,
+				.size = VK_WHOLE_SIZE
+		};
+
+		VkDependencyInfo barrierDependencyInfo{
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.bufferMemoryBarrierCount = 1,
+			.pBufferMemoryBarriers = &bufferBarrier
+		};
+
+		vkCmdPipelineBarrier2(commandBuffer, &barrierDependencyInfo);
+	}
 
 	void animate() {
 		bool quit{ false };
@@ -645,6 +690,15 @@ public:
 			};
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+			waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
+			waitForComputeWrite(commandBuffer, cloth.velocity.buffer);
+
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipeline);
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+			vkCmdDispatch(commandBuffer, ( cloth.positionData.size() + 31 ) / 32, 1, 1);
+
+			waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
+
 			transitionImageUndefinedToAttachment( commandBuffer );
 			RenderingAttachment renderingAttachment = setRenderingAttachment(deviceIF.logical.swapchainConfiguration.swapchainImageViews[imageIndex]);
 			vkCmdBeginRendering(commandBuffer, &renderingAttachment.renderingInfo );
@@ -685,6 +739,8 @@ public:
 			if (deviceIF.logical.swapchainConfiguration.updateSwapchain) {
 				recreateSwapchain();
 			}
+
+			SDL_Delay(1000);
 		}
 	}
 
@@ -848,7 +904,7 @@ public:
 			&cloth.predictedPosition,
 			&cloth.velocity,
 			&cloth.mass,
-			& cloth.lambda,
+			&cloth.lambda,
 			&cloth.constraints
 		};
 
@@ -891,7 +947,8 @@ public:
 					1.0
 				});
 
-				if (i == 0) {
+				//This works, pin top vertex layer
+				if (j == 0) {
 					cloth.massData.push_back(0.0f);
 				}
 				else {
@@ -1087,7 +1144,7 @@ private:
 		Field constraints;
 		Field indices;
 
-		int descriptorCount = 3;
+		int descriptorCount = 6;
 		VkDescriptorSet descriptorSet;
 		VkDescriptorSetLayout descriptorSetLayout;
 
