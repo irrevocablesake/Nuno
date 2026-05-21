@@ -757,54 +757,58 @@ public:
 			};
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-			vkCmdFillBuffer(commandBuffer, cloth.lambda.buffer, 0, VK_WHOLE_SIZE, 0);
-			waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
+			uint32_t maxSubSteps = 8;
+			float subStepdt = dt / maxSubSteps;
+			for (uint32_t subStepCounter = 0; subStepCounter < maxSubSteps; subStepCounter++) {
+				vkCmdFillBuffer(commandBuffer, cloth.lambda.buffer, 0, VK_WHOLE_SIZE, 0);
+				waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
 
-			GeneralPushConstant generalPushData{
-				.dt = dt,
-				.elapsedTime = elapsedTime,
-				.count = static_cast< uint32_t >( cloth.positionData.size() )
-			};
+				GeneralPushConstant generalPushData{
+					.dt = subStepdt,
+					.elapsedTime = elapsedTime,
+					.count = static_cast< uint32_t >( cloth.positionData.size() )
+				};
 
+				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipeline);
+				vkCmdPushConstants(commandBuffer, predictionPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GeneralPushConstant), &generalPushData );
+				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+				vkCmdDispatch(commandBuffer, ( cloth.positionData.size() + 31 ) / 32, 1, 1);
 
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipeline);
-			vkCmdPushConstants(commandBuffer, predictionPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GeneralPushConstant), &generalPushData );
-			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
-			vkCmdDispatch(commandBuffer, ( cloth.positionData.size() + 31 ) / 32, 1, 1);
+				waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
 
-			waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
+				vkCmdBindPipeline( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipeline);
+				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
 
-			vkCmdBindPipeline( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipeline);
-			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+				uint32_t solverSteps = 4;
+				for (uint32_t index = 0; index < solverSteps; index++) {
+					uint32_t offset = 0;
+					for (int i = 0; i < 4; i++) {
+						ConstraintsPushConstant pushData;
+						pushData.offset = offset;
+						pushData.count = cloth.constraintsInfo[i].count;
+						pushData.compliance = 0.00001f; 
+						pushData.dt = subStepdt;
 
-			for (uint32_t index = 0; index < 10; index++) {
-				uint32_t offset = 0;
-				for (int i = 0; i < 4; i++) {
-					ConstraintsPushConstant pushData;
-					pushData.offset = offset;
-					pushData.count = cloth.constraintsInfo[i].count;
-					pushData.compliance = 0.00001f; 
-					pushData.dt = dt;
+						offset = offset + cloth.constraintsInfo[i].count;
 
-					offset = offset + cloth.constraintsInfo[i].count;
+						vkCmdPushConstants( commandBuffer, constraintPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ConstraintsPushConstant), &pushData );
 
-					vkCmdPushConstants( commandBuffer, constraintPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ConstraintsPushConstant), &pushData );
+						uint32_t groupCount = (pushData.count + 31) / 32; 
+						vkCmdDispatch(commandBuffer, groupCount, 1, 1);
 
-					uint32_t groupCount = (pushData.count + 31) / 32; 
-					vkCmdDispatch(commandBuffer, groupCount, 1, 1);
-
-					waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
-					waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
+						waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
+						waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
+					}
 				}
+
+				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, finalizePipeline.pipeline);
+				vkCmdPushConstants(commandBuffer, finalizePipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GeneralPushConstant), &generalPushData);
+				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, finalizePipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+				vkCmdDispatch(commandBuffer, (cloth.positionData.size() + 31) / 32, 1, 1);
+
+				waitForComputeWrite(commandBuffer, cloth.position.buffer);
+				waitForComputeWrite(commandBuffer, cloth.velocity.buffer);
 			}
-
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, finalizePipeline.pipeline);
-			vkCmdPushConstants(commandBuffer, finalizePipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GeneralPushConstant), &generalPushData);
-			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, finalizePipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
-			vkCmdDispatch(commandBuffer, (cloth.positionData.size() + 31) / 32, 1, 1);
-
-			waitForComputeWrite(commandBuffer, cloth.position.buffer);
-			waitForComputeWrite(commandBuffer, cloth.velocity.buffer);
 
 			transitionImageUndefinedToAttachment( commandBuffer );
 			RenderingAttachment renderingAttachment = setRenderingAttachment(deviceIF.logical.swapchainConfiguration.swapchainImageViews[imageIndex]);
