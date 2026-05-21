@@ -286,7 +286,7 @@ public:
 		validateResult(vkAllocateCommandBuffers(deviceIF.logical.device, &commandBufferAllocateInfo, deviceIF.logical.swapchainConfiguration.commandBuffers.data()));
 	}
 
-	void loadAndCompileShaders() {
+	void setupSLANG() {
 		slang::createGlobalSession(slangGlobalSession.writeRef());
 
 		auto slangTargets{
@@ -321,11 +321,12 @@ public:
 			}
 		};
 
-		Slang::ComPtr< slang::ISession > slangSession;
 		slangGlobalSession->createSession(slangSessionDesc, slangSession.writeRef());
+	}
 
+	VkShaderModule loadAndCompileShaders( const char* shaderName, const char* filePath ) {
 		Slang::ComPtr< slang::IModule > slangModule{
-			slangSession->loadModuleFromSource("Modern Vulkan SLANG Shader", "assets/shaders/shader.slang", nullptr, nullptr)
+			slangSession->loadModuleFromSource( shaderName, filePath, nullptr, nullptr)
 		};
 
 		Slang::ComPtr< ISlangBlob > spirv;
@@ -337,36 +338,13 @@ public:
 			.pCode = (uint32_t*)spirv->getBufferPointer()
 		};
 
+		VkShaderModule shaderModule{};
 		validateResult(vkCreateShaderModule(deviceIF.logical.device, &shaderModuleCreateInfo, nullptr, &shaderModule));
 
+		return shaderModule;
 	}
 
 	void createPipeline(VkPipeline& pipeline, std::vector< VkPipelineShaderStageCreateInfo >& shaderStages, std::vector<VkDescriptorSetLayout>&layout, VkPipelineLayout& pipelineLayout, VkFormat format, VkColorComponentFlags flags, uint32_t pushConstantSize = 0) {
-
-		VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
-		if (pushConstantSize == 0) {
-			pipelineLayoutCreateInfo = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-				.setLayoutCount = static_cast<uint32_t>(layout.size()),
-				.pSetLayouts = layout.data()
-			};
-		}
-		else {
-			VkPushConstantRange pushConstantRange{
-				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-				.size = pushConstantSize
-			};
-
-			pipelineLayoutCreateInfo = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-				.setLayoutCount = static_cast<uint32_t>(layout.size()),
-				.pSetLayouts = layout.data(),
-				.pushConstantRangeCount = 1,
-				.pPushConstantRanges = &pushConstantRange
-			};
-		}
-
-		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout));
 
 		VkPipelineVertexInputStateCreateInfo vertexInputState{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -400,8 +378,8 @@ public:
 
 		VkPipelineDepthStencilStateCreateInfo depthStencilState{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-			.depthTestEnable = VK_FALSE,
-			.depthWriteEnable = VK_FALSE
+			.depthTestEnable = VK_TRUE,
+			.depthWriteEnable = VK_TRUE
 		};
 
 		VkPipelineRenderingCreateInfo renderingCreateInfo{
@@ -452,7 +430,7 @@ public:
 		validateResult(vkCreateGraphicsPipelines(deviceIF.logical.device, nullptr, 1, &pipelineCreateInfo, nullptr, &pipeline));
 	}
 
-	void createComputePipeline(VkPipeline& pipeline, VkPipelineShaderStageCreateInfo& shaderStages, VkPipelineLayout& pipelineLayout) {
+	void createComputePipeline(VkPipeline& pipeline, VkPipelineShaderStageCreateInfo& shaderStages, VkPipelineLayout& pipelineLayout, uint32_t pushConstantSize = 0 ) {
 		VkComputePipelineCreateInfo pipelineInfo{
 			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 			.stage = shaderStages,
@@ -463,26 +441,89 @@ public:
 	}
 
 	void setupPipeline() {
-		//COMPUTE PIPELINE
+		//COMPUTE PIPELINE - FINALIZE
+		VkPushConstantRange finalizePushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			.offset = 0,
+			.size = sizeof(GeneralPushConstant)
+		};
+
+		VkPipelineLayoutCreateInfo finalizePipelineLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &cloth.descriptorSetLayout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &finalizePushConstantRange
+		};
+
+		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &finalizePipelineLayoutCI, nullptr, &finalizePipeline.pipelineLayout));
+
+		VkPipelineShaderStageCreateInfo finalizeShaderStage{
+
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = loadAndCompileShaders("finalizeShaderModule", "assets/shaders/updateShader.slang"),
+			.pName = "main"
+
+		};
+
+		createComputePipeline(finalizePipeline.pipeline, finalizeShaderStage, finalizePipeline.pipelineLayout);
+
+		//COMPUTE PIPELINE - PREDICTION
+		VkPushConstantRange predictionPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			.offset = 0,
+			.size = sizeof( GeneralPushConstant )
+		};
+
 		VkPipelineLayoutCreateInfo predictionPipelineLayoutCI{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 			.setLayoutCount = 1,
-			.pSetLayouts = &cloth.descriptorSetLayout
+			.pSetLayouts = &cloth.descriptorSetLayout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &predictionPushConstantRange
 		};
 
 		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &predictionPipelineLayoutCI, nullptr, &predictionPipeline.pipelineLayout));
 
-		VkPipelineShaderStageCreateInfo computeShaderStage{
+		VkPipelineShaderStageCreateInfo predictionShaderStage{
 
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-			.module = shaderModule,
-			.pName = "predictionShader"
+			.module = loadAndCompileShaders( "predictionShaderModule", "assets/shaders/predictionShader.slang" ),
+			.pName = "main"
 
 		};
 
-		createComputePipeline( predictionPipeline.pipeline, computeShaderStage, predictionPipeline.pipelineLayout );
+		createComputePipeline( predictionPipeline.pipeline, predictionShaderStage, predictionPipeline.pipelineLayout );
 
+		//COMPUTE PIPELINE - CONSTRAINT
+		VkPushConstantRange constraintPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			.offset = 0,
+			.size = sizeof( ConstraintsPushConstant )
+		};
+
+		VkPipelineLayoutCreateInfo constraintPipelineLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &cloth.descriptorSetLayout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &constraintPushConstantRange
+		};
+
+		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &constraintPipelineLayoutCI, nullptr, &constraintPipeline.pipelineLayout));
+
+		VkPipelineShaderStageCreateInfo constraintShaderStage{
+
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = loadAndCompileShaders("constraintShaderModule", "assets/shaders/constraintShader.slang"),
+			.pName = "main"
+
+		};
+
+		createComputePipeline( constraintPipeline.pipeline, constraintShaderStage, constraintPipeline.pipelineLayout);
 
 		//GRAPHICS PIPELINE
 		std::vector<VkDescriptorSetLayout> graphicsDescriptorSetLayouts;
@@ -500,14 +541,14 @@ public:
 			{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.stage = VK_SHADER_STAGE_VERTEX_BIT,
-				.module = shaderModule,
-				.pName = "vertexShader"
+				.module = loadAndCompileShaders("vertexShaderModule", "assets/shaders/vertexShader.slang"),
+				.pName = "main"
 			},
 			{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-				.module = shaderModule,
-				.pName = "fragmentShader"
+				.module = loadAndCompileShaders("fragmentShaderModule", "assets/shaders/fragmentShader.slang"),
+				.pName = "main"
 			}
 		};
 		
@@ -625,11 +666,11 @@ public:
 		VkBufferMemoryBarrier2 bufferBarrier{
 				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
 
-				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
 
-				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-				.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+				.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
 
 				.buffer = buffer,
 				.offset = 0,
@@ -645,8 +686,27 @@ public:
 		vkCmdPipelineBarrier2(commandBuffer, &barrierDependencyInfo);
 	}
 
+	struct ConstraintsPushConstant {
+		uint32_t offset;
+		uint32_t count;
+		float compliance;
+		float dt;
+	};
+
+	struct GeneralPushConstant {
+		float dt;
+		float elapsedTime;
+		uint32_t count;
+	};
+
 	void animate() {
 		bool quit{ false };
+		uint64_t startFrameTime = SDL_GetPerformanceCounter();
+		uint64_t previousFrameTime = startFrameTime;
+		uint64_t frequency = SDL_GetPerformanceFrequency();
+		
+		float elapsedTime = 0.0f;
+
 		while (!quit) {
 			SDL_Event event;
 			while (SDL_PollEvent(&event)) {
@@ -658,6 +718,13 @@ public:
 					deviceIF.logical.swapchainConfiguration.updateSwapchain = true;
 				}
 			}
+
+			uint64_t currentFrameTime = SDL_GetPerformanceCounter();
+
+			float dt = (float)(currentFrameTime - previousFrameTime) / (float)frequency;
+			previousFrameTime = currentFrameTime;
+
+			elapsedTime = (float)(currentFrameTime - startFrameTime) / (float)frequency;
 
 			validateResult(vkWaitForFences(deviceIF.logical.device, 1, &deviceIF.logical.swapchainConfiguration.fences[frameIndex], true, UINT64_MAX));
 			validateResult(vkResetFences(deviceIF.logical.device, 1, &deviceIF.logical.swapchainConfiguration.fences[frameIndex]));
@@ -690,14 +757,54 @@ public:
 			};
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-			waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
-			waitForComputeWrite(commandBuffer, cloth.velocity.buffer);
+			vkCmdFillBuffer(commandBuffer, cloth.lambda.buffer, 0, VK_WHOLE_SIZE, 0);
+			waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
+
+			GeneralPushConstant generalPushData{
+				.dt = dt,
+				.elapsedTime = elapsedTime,
+				.count = static_cast< uint32_t >( cloth.positionData.size() )
+			};
+
 
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipeline);
+			vkCmdPushConstants(commandBuffer, predictionPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GeneralPushConstant), &generalPushData );
 			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
 			vkCmdDispatch(commandBuffer, ( cloth.positionData.size() + 31 ) / 32, 1, 1);
 
 			waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
+
+			vkCmdBindPipeline( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipeline);
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+
+			for (uint32_t index = 0; index < 10; index++) {
+				uint32_t offset = 0;
+				for (int i = 0; i < 4; i++) {
+					ConstraintsPushConstant pushData;
+					pushData.offset = offset;
+					pushData.count = cloth.constraintsInfo[i].count;
+					pushData.compliance = 0.00001f; 
+					pushData.dt = dt;
+
+					offset = offset + cloth.constraintsInfo[i].count;
+
+					vkCmdPushConstants( commandBuffer, constraintPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ConstraintsPushConstant), &pushData );
+
+					uint32_t groupCount = (pushData.count + 31) / 32; 
+					vkCmdDispatch(commandBuffer, groupCount, 1, 1);
+
+					waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
+					waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
+				}
+			}
+
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, finalizePipeline.pipeline);
+			vkCmdPushConstants(commandBuffer, finalizePipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GeneralPushConstant), &generalPushData);
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, finalizePipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+			vkCmdDispatch(commandBuffer, (cloth.positionData.size() + 31) / 32, 1, 1);
+
+			waitForComputeWrite(commandBuffer, cloth.position.buffer);
+			waitForComputeWrite(commandBuffer, cloth.velocity.buffer);
 
 			transitionImageUndefinedToAttachment( commandBuffer );
 			RenderingAttachment renderingAttachment = setRenderingAttachment(deviceIF.logical.swapchainConfiguration.swapchainImageViews[imageIndex]);
@@ -740,7 +847,7 @@ public:
 				recreateSwapchain();
 			}
 
-			SDL_Delay(1000);
+			//SDL_Delay(1000);
 		}
 	}
 
@@ -931,9 +1038,9 @@ public:
 	}
 
 	void populateCloth() {
-		int subDivision = 20;
-		float length = 1.0;
-		float width = 0.5;
+		int subDivision = 100;
+		float length = 1.4;
+		float width = 0.7;
 
 		float segmentLength = length / subDivision;
 		float segmentWidth = width / subDivision;
@@ -947,7 +1054,7 @@ public:
 					1.0
 				});
 
-				//This works, pin top vertex layer
+				//This works, pin top vertex layer - still need to work on this function to make it customizable pinning
 				if (j == 0) {
 					cloth.massData.push_back(0.0f);
 				}
@@ -956,6 +1063,8 @@ public:
 				}
 			}
 		}
+
+		std::vector<Constraints> coloredConstraints[4];
 
 		for (uint32_t i = 0; i < subDivision; i++) {
 			for (uint32_t j = 0; j < subDivision; j++) {
@@ -975,31 +1084,43 @@ public:
 				cloth.indexData.push_back(topRight);
 				cloth.indexData.push_back(bottomRight);
 				cloth.indexData.push_back(bottomLeft);
-
-				cloth.constraintsData.push_back({
-					topLeft, topRight, segmentWidth
-				});
-
-				cloth.constraintsData.push_back({
-					topLeft, bottomLeft, segmentLength
-				});
-
-				if (j == subDivision - 1) {
-					cloth.constraintsData.push_back({
-						topRight, bottomRight, segmentLength
-					});
-				}
-
-				if (i == subDivision - 1) {
-					cloth.constraintsData.push_back({
-						bottomLeft, bottomRight, segmentWidth
-					});
-				}
 			}
 		}
 
+		for (uint32_t i = 0; i <= subDivision; i++) {
+			for (uint32_t j = 0; j < subDivision; j++) {
+				uint32_t current = i * (subDivision + 1) + j;
+				uint32_t right = current + 1;
+				Constraints c = { current, right, segmentWidth };
+
+				if (j % 2 == 0) coloredConstraints[0].push_back(c);
+				else           coloredConstraints[1].push_back(c);
+			}
+		}
+
+		for (uint32_t i = 0; i < subDivision; i++) {
+			for (uint32_t j = 0; j <= subDivision; j++) {
+				uint32_t current = i * (subDivision + 1) + j;
+				uint32_t bottom = current + (subDivision + 1);
+				Constraints c = { current, bottom, segmentLength };
+
+				if (i % 2 == 0) coloredConstraints[2].push_back(c);
+				else           coloredConstraints[3].push_back(c);
+			}
+		}
+		for (int i = 0; i < 4; i++) {
+
+			cloth.constraintsInfo[i].count = static_cast<uint32_t>(coloredConstraints[i].size());
+
+			cloth.constraintsData.insert(
+				cloth.constraintsData.end(),
+				coloredConstraints[i].begin(),
+				coloredConstraints[i].end()
+			);
+		}
+
 		cloth.velocityData.resize(cloth.positionData.size(), glm::vec4(0, 0, 0, 0));
-		cloth.lambdaData.resize(cloth.positionData.size(), 0.0);
+		cloth.lambdaData.resize(cloth.constraintsData.size(), 0.0);
 	}
 
 	void setupCloth() {
@@ -1027,7 +1148,7 @@ public:
 		setupSwapchain();
 		setupSync2();
 		setupCommandBuffers();
-		loadAndCompileShaders();
+		setupSLANG();
 		setupCloth();
 		setupPipeline();
 		animate();
@@ -1108,7 +1229,7 @@ private:
 	VmaAllocator vmaAllocator;
 
 	Slang::ComPtr< slang::IGlobalSession > slangGlobalSession;
-	VkShaderModule shaderModule{};
+	Slang::ComPtr< slang::ISession > slangSession;
 
 	int frameIndex = 0;
 	uint32_t imageIndex = 0;
@@ -1116,7 +1237,7 @@ private:
 	struct Pipeline {
 		VkPipelineLayout pipelineLayout;
 		VkPipeline pipeline;
-	} graphicsPipeline, predictionPipeline;
+	} graphicsPipeline, predictionPipeline, constraintPipeline, finalizePipeline;
 
 	VkDescriptorPool descriptorPool;
 
@@ -1131,7 +1252,10 @@ private:
 		uint32_t b;
 
 		float restLength;
-		float padding;
+	};
+
+	struct ConstraintInfo {
+		uint32_t count;
 	};
 
 	struct Cloth {
@@ -1152,6 +1276,7 @@ private:
 		std::vector< glm::vec4 > positionData;
 		std::vector< uint32_t > indexData;
 		std::vector< float > massData;
+		ConstraintInfo constraintsInfo[4];
 		std::vector< Constraints > constraintsData;
 		std::vector< glm::vec4 > velocityData;
 		std::vector< float > lambdaData;
