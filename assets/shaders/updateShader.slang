@@ -17,6 +17,10 @@ struct PushConstants {
     float dt;
     float elapsedtime;
     uint32_t count;
+
+    float4 projectionMatrix;
+    float4 viewMatrix;
+    float4 modelMatrix;
 };
 
 [[vk::push_constant]]
@@ -50,5 +54,5 @@ void main(uint3 id: SV_DispatchThreadID) {
     velocities[i].xyz = (predictedPositions[i].xyz - positions[i].xyz) / push.dt;
     positions[i].xyz = predictedPositions[i].xyz;
 
-    velocities[i].xyz *= 0.998;
+    velocities[i].xyz *= 0.999999;
 }

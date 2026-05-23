@@ -19,6 +19,7 @@
 #include<iostream>
 #include<vector>
 #include<array>
+#include<unordered_map>
 
 class Renderer {
 public:
@@ -378,8 +379,8 @@ public:
 
 		VkPipelineDepthStencilStateCreateInfo depthStencilState{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-			.depthTestEnable = VK_TRUE,
-			.depthWriteEnable = VK_TRUE
+			.depthTestEnable = VK_FALSE,
+			.depthWriteEnable = VK_FALSE
 		};
 
 		VkPipelineRenderingCreateInfo renderingCreateInfo{
@@ -400,7 +401,7 @@ public:
 
 		VkPipelineRasterizationStateCreateInfo rasterizationState{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-			.polygonMode = VK_POLYGON_MODE_LINE,
+			.polygonMode = VK_POLYGON_MODE_FILL,
 			.cullMode = VK_CULL_MODE_NONE,
 			.frontFace = VK_FRONT_FACE_CLOCKWISE,
 			.lineWidth = 1.0f
@@ -441,6 +442,35 @@ public:
 	}
 
 	void setupPipeline() {
+		//COMPUTE PIPELINE - NORMALS
+
+		VkPushConstantRange normalsPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			.offset = 0,
+			.size = sizeof(GeneralPushConstant)
+		};
+
+		VkPipelineLayoutCreateInfo normalsPipelineLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &cloth.descriptorSetLayout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &normalsPushConstantRange
+		};
+
+		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &normalsPipelineLayoutCI, nullptr, &normalsPipeline.pipelineLayout));
+
+		VkPipelineShaderStageCreateInfo normalsShaderStage{
+
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = loadAndCompileShaders("normalsShaderModule", "assets/shaders/normalsShader.slang"),
+			.pName = "main"
+
+		};
+
+		createComputePipeline(normalsPipeline.pipeline, normalsShaderStage, normalsPipeline.pipelineLayout);
+
 		//COMPUTE PIPELINE - FINALIZE
 		VkPushConstantRange finalizePushConstantRange{
 			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
@@ -529,10 +559,18 @@ public:
 		std::vector<VkDescriptorSetLayout> graphicsDescriptorSetLayouts;
 		graphicsDescriptorSetLayouts.push_back( cloth.descriptorSetLayout );
 
+		VkPushConstantRange graphicsPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+			.offset = 0,
+			.size = sizeof(GeneralPushConstant)
+		};
+
 		VkPipelineLayoutCreateInfo graphicsPipelineLayoutCI{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 			.setLayoutCount = static_cast< uint32_t >( graphicsDescriptorSetLayouts.size()),
-			.pSetLayouts = graphicsDescriptorSetLayouts.data()
+			.pSetLayouts = graphicsDescriptorSetLayouts.data(),
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &graphicsPushConstantRange
 		};
 
 		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &graphicsPipelineLayoutCI, nullptr, &graphicsPipeline.pipelineLayout ));
@@ -697,6 +735,11 @@ public:
 		float dt;
 		float elapsedTime;
 		uint32_t count;
+		float padding;
+
+		glm::mat4 projectionMatrix{};
+		glm::mat4 viewMatrix{};
+		glm::mat4 modelMatrix{};
 	};
 
 	void animate() {
@@ -757,17 +800,32 @@ public:
 			};
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-			uint32_t maxSubSteps = 8;
+			GeneralPushConstant generalPushData;
+
+			generalPushData.modelMatrix = glm::mat4(1.0f);
+			generalPushData.viewMatrix = glm::lookAt(
+				camera.cameraPosition,
+				camera.cameraTarget,
+				camera.upDirection
+			);
+			generalPushData.projectionMatrix = glm::perspective(
+				glm::radians(45.0f),
+				float(windowIF.dimensions.x) / float(windowIF.dimensions.y),
+				0.1f,
+				1000.0f
+			);
+
+			generalPushData.projectionMatrix[1][1] *= -1.0f;
+
+			uint32_t maxSubSteps = 20;
 			float subStepdt = dt / maxSubSteps;
 			for (uint32_t subStepCounter = 0; subStepCounter < maxSubSteps; subStepCounter++) {
 				vkCmdFillBuffer(commandBuffer, cloth.lambda.buffer, 0, VK_WHOLE_SIZE, 0);
 				waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
 
-				GeneralPushConstant generalPushData{
-					.dt = subStepdt,
-					.elapsedTime = elapsedTime,
-					.count = static_cast< uint32_t >( cloth.positionData.size() )
-				};
+				generalPushData.dt = subStepdt;
+				generalPushData.elapsedTime = elapsedTime;
+				generalPushData.count = static_cast<uint32_t>(cloth.positionData.size());
 
 				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, predictionPipeline.pipeline);
 				vkCmdPushConstants(commandBuffer, predictionPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GeneralPushConstant), &generalPushData );
@@ -779,7 +837,7 @@ public:
 				vkCmdBindPipeline( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipeline);
 				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
 
-				uint32_t solverSteps = 4;
+				uint32_t solverSteps = 20;
 				for (uint32_t index = 0; index < solverSteps; index++) {
 					uint32_t offset = 0;
 					for (int i = 0; i < 4; i++) {
@@ -810,10 +868,18 @@ public:
 				waitForComputeWrite(commandBuffer, cloth.velocity.buffer);
 			}
 
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, normalsPipeline.pipeline);
+			vkCmdPushConstants(commandBuffer, normalsPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GeneralPushConstant), &generalPushData);
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, normalsPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+			vkCmdDispatch(commandBuffer, (cloth.positionData.size() + 31) / 32, 1, 1);
+
+			waitForComputeWrite(commandBuffer, cloth.normals.buffer);
+
 			transitionImageUndefinedToAttachment( commandBuffer );
 			RenderingAttachment renderingAttachment = setRenderingAttachment(deviceIF.logical.swapchainConfiguration.swapchainImageViews[imageIndex]);
 			vkCmdBeginRendering(commandBuffer, &renderingAttachment.renderingInfo );
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline.pipeline );
+			vkCmdPushConstants(commandBuffer, graphicsPipeline.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GeneralPushConstant), &generalPushData);
 			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
 			vkCmdBindIndexBuffer(commandBuffer, cloth.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
 			vkCmdDrawIndexed( commandBuffer, cloth.indexData.size(), 1, 0, 0, 0 );
@@ -1016,7 +1082,10 @@ public:
 			&cloth.velocity,
 			&cloth.mass,
 			&cloth.lambda,
-			&cloth.constraints
+			&cloth.constraints,
+			&cloth.trianglesCountBuffer,
+			&cloth.trianglesBuffer,
+			&cloth.normals
 		};
 
 		std::vector< VkDescriptorBufferInfo > writesInfo( cloth.descriptorCount );
@@ -1123,6 +1192,53 @@ public:
 			);
 		}
 
+		std::unordered_map< uint32_t, std::vector< uint32_t >> vertexTriangleGroup;
+
+		for (uint32_t index = 0; index < cloth.indexData.size(); index = index + 3) {
+			uint32_t triangleIndex = index / 3;
+
+			uint32_t v0 = cloth.indexData[index];
+			uint32_t v1 = cloth.indexData[index + 1];
+			uint32_t v2 = cloth.indexData[index + 2];
+
+			vertexTriangleGroup[v0].push_back(v0);
+			vertexTriangleGroup[v0].push_back(v1);
+			vertexTriangleGroup[v0].push_back(v2);
+
+			vertexTriangleGroup[v1].push_back(v0);
+			vertexTriangleGroup[v1].push_back(v1);
+			vertexTriangleGroup[v1].push_back(v2);
+
+			vertexTriangleGroup[v2].push_back(v0);
+			vertexTriangleGroup[v2].push_back(v1);
+			vertexTriangleGroup[v2].push_back(v2);
+
+		}
+
+		cloth.trianglesCount.resize(cloth.positionData.size() + 1, 0);
+		cloth.trianglesCount[0] = 0;
+
+		for (uint32_t v = 0; v < cloth.positionData.size(); v++) {
+
+			auto& list = vertexTriangleGroup[v];
+
+			cloth.trianglesCount[v + 1] = cloth.trianglesCount[v] + list.size();
+
+			for (uint32_t index : list) {
+				cloth.triangles.push_back( index );
+			}
+		}
+
+		std::cout << "--- Triangle Offset Array (trianglesCount) ---" << std::endl;
+		for (uint32_t i = 0; i < cloth.trianglesCount.size(); ++i) {
+			//std::cout << "Vertex " << i << " starts at index: " << cloth.trianglesCount[i] << std::endl;
+		}
+
+		std::cout << "\n--- Flat Adjacency Array (triangles) ---" << std::endl;
+		for (uint32_t i = 0; i < cloth.triangles.size(); ++i) {
+			//std::cout << "Index [" << i << "]: " << cloth.triangles[i] << std::endl;
+		}
+
 		cloth.velocityData.resize(cloth.positionData.size(), glm::vec4(0, 0, 0, 0));
 		cloth.lambdaData.resize(cloth.constraintsData.size(), 0.0);
 	}
@@ -1138,6 +1254,9 @@ public:
 		setupBuffer( cloth.lambdaData.data(), cloth.lambdaData.size() * sizeof(float), cloth.lambda, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 		setupBuffer( cloth.constraintsData.data(), cloth.constraintsData.size() * sizeof(Constraints), cloth.constraints, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 		setupBuffer(cloth.indexData.data(), cloth.indexData.size() * sizeof( uint32_t ), cloth.indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT );
+		setupBuffer(cloth.trianglesCount.data(), cloth.trianglesCount.size() * sizeof(uint32_t), cloth.trianglesCountBuffer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer(cloth.triangles.data(), cloth.triangles.size() * sizeof(uint32_t), cloth.trianglesBuffer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer(cloth.velocityData.data(), cloth.velocityData.size() * sizeof(glm::vec4), cloth.normals, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
 		updateDescriptors();
 	}
@@ -1241,9 +1360,15 @@ private:
 	struct Pipeline {
 		VkPipelineLayout pipelineLayout;
 		VkPipeline pipeline;
-	} graphicsPipeline, predictionPipeline, constraintPipeline, finalizePipeline;
+	} graphicsPipeline, predictionPipeline, constraintPipeline, finalizePipeline, normalsPipeline;
 
 	VkDescriptorPool descriptorPool;
+
+	struct Camera {
+		glm::vec3 cameraPosition = glm::vec3(0.0f, 0.0f, -2.0f);
+		glm::vec3 cameraTarget = glm::vec3(0.0f, 0.0f, 0.0f);
+		glm::vec3 upDirection = glm::vec3(0.0f, -1.0f, 0.0f);
+	} camera;
 
 	struct Field {
 		VkBuffer buffer;
@@ -1272,7 +1397,12 @@ private:
 		Field constraints;
 		Field indices;
 
-		int descriptorCount = 6;
+		Field trianglesBuffer;
+		Field trianglesCountBuffer;
+
+		Field normals;
+
+		int descriptorCount = 9;
 		VkDescriptorSet descriptorSet;
 		VkDescriptorSetLayout descriptorSetLayout;
 
@@ -1284,6 +1414,9 @@ private:
 		std::vector< Constraints > constraintsData;
 		std::vector< glm::vec4 > velocityData;
 		std::vector< float > lambdaData;
+
+		std::vector< uint32_t > triangles;
+		std::vector< uint32_t > trianglesCount;
 	} cloth;
 };
 
