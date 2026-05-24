@@ -54,5 +54,5 @@ void main(uint3 id: SV_DispatchThreadID) {
     velocities[i].xyz = (predictedPositions[i].xyz - positions[i].xyz) / push.dt;
     positions[i].xyz = predictedPositions[i].xyz;
 
-    velocities[i].xyz *= 0.999999;
+    velocities[i].xyz *= 0.95;
 }

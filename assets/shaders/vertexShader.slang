@@ -29,10 +29,8 @@ StructuredBuffer<float4> normals;
 
 [shader("vertex")]
 VSOutput main( VSInput input ) {
+
     VSOutput output;
-
-    //output.position = positions[input.vertexID];
-
     output.position = mul( push.projectionMatrix, mul ( push.viewMatrix, mul(  push.modelMatrix, positions[input.vertexID])));
     output.normal = normals[input.vertexID];
    
