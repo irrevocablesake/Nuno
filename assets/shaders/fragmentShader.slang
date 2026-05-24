@@ -4,15 +4,22 @@ struct VSInput {
 };
 
 [shader("fragment")]
-float4 main(VSInput input) : SV_Target {
-    float3 lightDir = normalize(float3(1.0, 1.0, -2.0));
+float4 main(VSInput input, bool isFrontFace : SV_IsFrontFace) : SV_Target {
+    float3 lightDir = normalize(float3(0.0, 0-2.0, 1.0));
 
-    float NdotL = saturate( dot( normalize(input.normal.xyz), lightDir));
+    if (!isFrontFace) {
+        input.normal = -input.normal;
+    }
 
-    float3 baseColor = float3(0.8, 0.2, 0.2);
+    float NdotL = saturate(dot(input.normal.xyz, lightDir));
 
-    float3 color = baseColor * NdotL;
+    float3 baseColor = float3(1.0, 0.0, 0.0); 
+    
+    float3 ambient = baseColor * 0.2; 
+    float3 diffuse = baseColor * NdotL;
+    float3 specular = pow(NdotL, 32.0) * 0.5; 
 
-    return float4( color, 1.0);
-    //return float4(1.0, 0.0, 0.0, 0.0);
+    float3 color = ambient + diffuse + specular;
+
+    return float4(color, 1.0);
 }
