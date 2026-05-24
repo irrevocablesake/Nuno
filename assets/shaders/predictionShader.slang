@@ -1,5 +1,5 @@
 static const float dt = 0.16;
-static const float3 gravity = float3( 0.0, 9.81, 0.0 );
+static const float3 gravity = float3( 1.0, 9.81, 2.0 );
 
 struct Constraints {
     uint32_t a;
@@ -12,6 +12,12 @@ struct PushConstants {
     float dt;
     float elapsedTime;
     uint32_t count;
+
+    float padding;
+
+    float4x4 projectionMatrix;
+    float4x4 viewMatrix;
+    float4x4 modelMatrix;
 };
 
 [[vk::push_constant]]
@@ -42,6 +48,8 @@ void main(uint3 dispatchThreadID: SV_DispatchThreadID) {
     if (threadID >= push.count ) return;
 
     float w = mass[threadID];
+
+    //Note: For now, we just mess around with gravity, but we need to add external forces later
 
     if (w > 0.0) {
         velocities[threadID].xyz += gravity * push.dt;
