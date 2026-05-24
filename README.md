@@ -10,4 +10,4 @@ https://github.com/user-attachments/assets/f31b3443-d2d1-44f3-98a3-4316194200c1
 
 ## Resources
 
-1) ![ XPBD ]( https://matthias-research.github.io/pages/publications/XPBD.pdf )
+1) [ XPBD ]( https://matthias-research.github.io/pages/publications/XPBD.pdf )
