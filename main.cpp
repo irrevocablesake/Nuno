@@ -443,7 +443,6 @@ public:
 
 	void setupPipeline() {
 		//COMPUTE PIPELINE - NORMALS
-
 		VkPushConstantRange normalsPushConstantRange{
 			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
 			.offset = 0,
@@ -554,6 +553,34 @@ public:
 		};
 
 		createComputePipeline( constraintPipeline.pipeline, constraintShaderStage, constraintPipeline.pipelineLayout);
+
+		//COMPUTE PIPELINE - AREA
+		VkPushConstantRange areaPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			.offset = 0,
+			.size = sizeof(ConstraintsPushConstant)
+		};
+
+		VkPipelineLayoutCreateInfo areaPipelineLayoutCI{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &cloth.descriptorSetLayout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &areaPushConstantRange
+		};
+
+		validateResult(vkCreatePipelineLayout(deviceIF.logical.device, &areaPipelineLayoutCI, nullptr, &areaPipeline.pipelineLayout));
+
+		VkPipelineShaderStageCreateInfo areaShaderStage{
+
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = loadAndCompileShaders("areaShaderModule", "assets/shaders/areaConstraint.slang"),
+			.pName = "main"
+
+		};
+
+		createComputePipeline(areaPipeline.pipeline, areaShaderStage, areaPipeline.pipelineLayout);
 
 		//GRAPHICS PIPELINE
 		std::vector<VkDescriptorSetLayout> graphicsDescriptorSetLayouts;
@@ -742,6 +769,14 @@ public:
 		glm::mat4 modelMatrix{};
 	};
 
+	struct AreaConstraint {
+		uint32_t a;
+		uint32_t b;
+		uint32_t c;
+
+		float restArea;
+	};
+
 	void animate() {
 		bool quit{ false };
 		uint64_t startFrameTime = SDL_GetPerformanceCounter();
@@ -817,7 +852,7 @@ public:
 
 			generalPushData.projectionMatrix[1][1] *= -1.0f;
 
-			uint32_t maxSubSteps = 20;
+			uint32_t maxSubSteps = 8;
 			float subStepdt = dt / maxSubSteps;
 			for (uint32_t subStepCounter = 0; subStepCounter < maxSubSteps; subStepCounter++) {
 				vkCmdFillBuffer(commandBuffer, cloth.lambda.buffer, 0, VK_WHOLE_SIZE, 0);
@@ -834,29 +869,49 @@ public:
 
 				waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
 
-				vkCmdBindPipeline( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipeline);
-				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
-
-				uint32_t solverSteps = 20;
+				uint32_t solverSteps = 3;
 				for (uint32_t index = 0; index < solverSteps; index++) {
 					uint32_t offset = 0;
-					for (int i = 0; i < 4; i++) {
+					for (int i = 0; i < 12; i++) {
 						ConstraintsPushConstant pushData;
 						pushData.offset = offset;
 						pushData.count = cloth.constraintsInfo[i].count;
-						pushData.compliance = 0.00001f; 
 						pushData.dt = subStepdt;
+
+						if (i < 4) {
+							pushData.compliance = 0.0001f;
+						}
+						else if (i < 7) {
+							pushData.compliance = 0.001f;
+						}
+						else {
+							pushData.compliance = 0.0001f;
+						}
 
 						offset = offset + cloth.constraintsInfo[i].count;
 
+						vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipeline);
+						vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, constraintPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
 						vkCmdPushConstants( commandBuffer, constraintPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ConstraintsPushConstant), &pushData );
-
-						uint32_t groupCount = (pushData.count + 31) / 32; 
-						vkCmdDispatch(commandBuffer, groupCount, 1, 1);
+						vkCmdDispatch(commandBuffer, (pushData.count + 31) / 32, 1, 1);
 
 						waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
 						waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
 					}
+
+					ConstraintsPushConstant pushData01{
+						.offset = 0,
+						.count = static_cast< uint32_t >( cloth.areaConstraints.size() ),
+						.compliance = 0.01,
+						.dt = subStepdt,
+					};
+					vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, areaPipeline.pipeline);
+					vkCmdPushConstants(commandBuffer, areaPipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ConstraintsPushConstant), &pushData01);
+					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, areaPipeline.pipelineLayout, 0, 1, &cloth.descriptorSet, 0, nullptr);
+					vkCmdDispatch(commandBuffer, (cloth.areaConstraints.size() + 31) / 32, 1, 1);
+
+					waitForComputeWrite(commandBuffer, cloth.predictedPosition.buffer);
+					waitForComputeWrite(commandBuffer, cloth.lambda.buffer);
 				}
 
 				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, finalizePipeline.pipeline);
@@ -917,7 +972,7 @@ public:
 				recreateSwapchain();
 			}
 
-			//SDL_Delay(1000);
+			//SDL_Delay(100);
 		}
 	}
 
@@ -1085,7 +1140,8 @@ public:
 			&cloth.constraints,
 			&cloth.trianglesCountBuffer,
 			&cloth.trianglesBuffer,
-			&cloth.normals
+			&cloth.normals,
+			&cloth.area
 		};
 
 		std::vector< VkDescriptorBufferInfo > writesInfo( cloth.descriptorCount );
@@ -1137,7 +1193,7 @@ public:
 			}
 		}
 
-		std::vector<Constraints> coloredConstraints[4];
+		std::vector<Constraints> coloredConstraints[12];
 
 		for (uint32_t i = 0; i < subDivision; i++) {
 			for (uint32_t j = 0; j < subDivision; j++) {
@@ -1181,7 +1237,100 @@ public:
 				else           coloredConstraints[3].push_back(c);
 			}
 		}
-		for (int i = 0; i < 4; i++) {
+
+		// SHEAR CONSTRAINTS
+		float shearRestLength = sqrt(
+			(segmentWidth * segmentWidth) +
+			(segmentLength * segmentLength)
+		);
+
+		for (uint32_t i = 0; i < subDivision; i++) {
+			for (uint32_t j = 0; j < subDivision; j++) {
+
+				uint32_t rowStart = i * (subDivision + 1);
+				uint32_t nextRowStart = (i + 1) * (subDivision + 1);
+
+				uint32_t topLeft = rowStart + j;
+				uint32_t bottomRight = nextRowStart + j + 1;
+
+				Constraints c = {
+					topLeft,
+					bottomRight,
+					shearRestLength
+				};
+
+				if ((i + j) % 2 == 0)
+					coloredConstraints[4].push_back(c);
+				else
+					coloredConstraints[5].push_back(c);
+			}
+		}
+
+		for (uint32_t i = 0; i < subDivision; i++) {
+			for (uint32_t j = 0; j < subDivision; j++) {
+
+				uint32_t rowStart = i * (subDivision + 1);
+				uint32_t nextRowStart = (i + 1) * (subDivision + 1);
+
+				uint32_t topRight = rowStart + j + 1;
+				uint32_t bottomLeft = nextRowStart + j;
+
+				Constraints c = {
+					topRight,
+					bottomLeft,
+					shearRestLength
+				};
+
+				if ((i + j) % 2 == 0)
+					coloredConstraints[6].push_back(c);
+				else
+					coloredConstraints[7].push_back(c);
+			}
+		}
+
+		float horizontalBendingRestLength = segmentWidth * 2.0f;
+
+		for (uint32_t i = 0; i <= subDivision; i++) {
+			for (uint32_t j = 0; j < subDivision - 1; j++) {
+
+				uint32_t current = i * (subDivision + 1) + j;
+				uint32_t right2 = current + 2;
+
+				Constraints c = {
+					current,
+					right2,
+					horizontalBendingRestLength
+				};
+
+				if (j % 2 == 0)
+					coloredConstraints[8].push_back(c);
+				else
+					coloredConstraints[9].push_back(c);
+			}
+		}
+
+		float verticalBendingRestLength = segmentLength * 2.0f;
+
+		for (uint32_t i = 0; i < subDivision - 1; i++) {
+			for (uint32_t j = 0; j <= subDivision; j++) {
+
+				uint32_t current = i * (subDivision + 1) + j;
+				uint32_t bottom2 = current + 2 * (subDivision + 1);
+
+				Constraints c = {
+					current,
+					bottom2,
+					verticalBendingRestLength
+				};
+
+				if (i % 2 == 0)
+					coloredConstraints[10].push_back(c);
+				else
+					coloredConstraints[11].push_back(c);
+			}
+		}
+
+		for (int i = 0; i < 12; i++) {
 
 			cloth.constraintsInfo[i].count = static_cast<uint32_t>(coloredConstraints[i].size());
 
@@ -1229,14 +1378,27 @@ public:
 			}
 		}
 
-		std::cout << "--- Triangle Offset Array (trianglesCount) ---" << std::endl;
-		for (uint32_t i = 0; i < cloth.trianglesCount.size(); ++i) {
-			//std::cout << "Vertex " << i << " starts at index: " << cloth.trianglesCount[i] << std::endl;
-		}
+		for (uint32_t index = 0; index < cloth.indexData.size(); index += 3) {
 
-		std::cout << "\n--- Flat Adjacency Array (triangles) ---" << std::endl;
-		for (uint32_t i = 0; i < cloth.triangles.size(); ++i) {
-			//std::cout << "Index [" << i << "]: " << cloth.triangles[i] << std::endl;
+			uint32_t i0 = cloth.indexData[index];
+			uint32_t i1 = cloth.indexData[index+ 1];
+			uint32_t i2 = cloth.indexData[index + 2];
+
+			glm::vec3 p1 = cloth.positionData[i0];
+			glm::vec3 p2 = cloth.positionData[i1];
+			glm::vec3 p3 = cloth.positionData[i2];
+
+			float restArea =
+				0.5f * glm::length(glm::cross(p2 - p1, p3 - p1));
+
+			AreaConstraint c{
+				i0,
+				i1,
+				i2,
+				restArea
+			};
+
+			cloth.areaConstraints.push_back(c);
 		}
 
 		cloth.velocityData.resize(cloth.positionData.size(), glm::vec4(0, 0, 0, 0));
@@ -1257,6 +1419,7 @@ public:
 		setupBuffer(cloth.trianglesCount.data(), cloth.trianglesCount.size() * sizeof(uint32_t), cloth.trianglesCountBuffer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 		setupBuffer(cloth.triangles.data(), cloth.triangles.size() * sizeof(uint32_t), cloth.trianglesBuffer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 		setupBuffer(cloth.velocityData.data(), cloth.velocityData.size() * sizeof(glm::vec4), cloth.normals, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		setupBuffer(cloth.areaConstraints.data(), cloth.areaConstraints.size() * sizeof(AreaConstraint), cloth.area, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
 		updateDescriptors();
 	}
@@ -1360,12 +1523,12 @@ private:
 	struct Pipeline {
 		VkPipelineLayout pipelineLayout;
 		VkPipeline pipeline;
-	} graphicsPipeline, predictionPipeline, constraintPipeline, finalizePipeline, normalsPipeline;
+	} graphicsPipeline, predictionPipeline, constraintPipeline, finalizePipeline, normalsPipeline, areaPipeline;
 
 	VkDescriptorPool descriptorPool;
 
 	struct Camera {
-		glm::vec3 cameraPosition = glm::vec3(0.0f, 0.0f, -2.0f);
+		glm::vec3 cameraPosition = glm::vec3(0.0f, 0.0f, 2.0f);
 		glm::vec3 cameraTarget = glm::vec3(0.0f, 0.0f, 0.0f);
 		glm::vec3 upDirection = glm::vec3(0.0f, -1.0f, 0.0f);
 	} camera;
@@ -1401,8 +1564,9 @@ private:
 		Field trianglesCountBuffer;
 
 		Field normals;
+		Field area;
 
-		int descriptorCount = 9;
+		int descriptorCount = 10;
 		VkDescriptorSet descriptorSet;
 		VkDescriptorSetLayout descriptorSetLayout;
 
@@ -1410,10 +1574,12 @@ private:
 		std::vector< glm::vec4 > positionData;
 		std::vector< uint32_t > indexData;
 		std::vector< float > massData;
-		ConstraintInfo constraintsInfo[4];
+		ConstraintInfo constraintsInfo[12];
 		std::vector< Constraints > constraintsData;
 		std::vector< glm::vec4 > velocityData;
 		std::vector< float > lambdaData;
+
+		std::vector< AreaConstraint > areaConstraints;
 
 		std::vector< uint32_t > triangles;
 		std::vector< uint32_t > trianglesCount;
