@@ -1,6 +1,8 @@
 # Nuno
 
-Nuno is a cloth simulation based on extended position based dynamics, a different approach to physics based sims. It's still a WIP, and hence this section is empty ( for now ). Eventually, I will be updating this page as I progres.
+Nuno is a cloth simulation based on extended position based dynamics, a different approach to physics based sims. It's still a WIP, and hence this section is empty ( for now ). Based on the Research Papers by Matthias Müller-Fischer & Team at NVIDIA.
+
+Eventually, I will be updating this page as I progres.
 
 ## Video
 
